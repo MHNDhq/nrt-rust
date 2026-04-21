@@ -17,11 +17,10 @@ pub enum NrtError {
         budget_vram_mb: u64,
     },
 
-    #[error("standby weights exceed ram_budget ({standby_mb} MB needed, {budget_ram_mb} MB declared)")]
-    RamBudgetExceeded {
-        standby_mb: u64,
-        budget_ram_mb: u64,
-    },
+    #[error(
+        "standby weights exceed ram_budget ({standby_mb} MB needed, {budget_ram_mb} MB declared)"
+    )]
+    RamBudgetExceeded { standby_mb: u64, budget_ram_mb: u64 },
 
     #[error("tier transition rejected: {from:?} -> {to:?} ({reason})")]
     InvalidTransition {
