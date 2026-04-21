@@ -1,4 +1,3 @@
-use nrt_core::ModelId;
 use serde::{Deserialize, Serialize};
 
 /// Describes which HuggingFace repo to pull weights/tokenizer from, plus
@@ -29,6 +28,10 @@ pub struct ModelProfile {
     /// via a simple substring match on the first ~20 tokens.
     #[serde(default)]
     pub router: Option<RouterConfig>,
+    /// Marker for placeholder Remote-tier registrations. These should never
+    /// fetch local weights or tokenizers.
+    #[serde(default)]
+    pub remote_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +85,7 @@ pub fn default_tinyllama_profile() -> ModelProfile {
         nominal_vram_mb: 720,
         nominal_ram_mb: 900,
         router: None,
+        remote_only: false,
     }
 }
 
@@ -115,18 +119,50 @@ fn default_keyword_triggers(intents: &[String]) -> Vec<(String, Vec<String>)> {
             let label = i.to_string();
             let mut words = vec![label.clone()];
             match label.as_str() {
-                "billing" => words.extend([
-                    "refund", "charge", "charged", "payment", "paid", "bill", "subscription",
-                    "card", "invoice", "receipt", "pricing", "money",
-                ].iter().map(|s| s.to_string())),
-                "technical" => words.extend([
-                    "error", "500", "502", "404", "debug", "login", "server", "bug", "crash",
-                    "timeout", "latency", "api", "endpoint", "config",
-                ].iter().map(|s| s.to_string())),
-                "legal" => words.extend([
-                    "law", "legal", "arbitration", "contract", "tos", "terms", "enforce",
-                    "jurisdiction", "privacy", "gdpr", "copyright", "license",
-                ].iter().map(|s| s.to_string())),
+                "billing" => words.extend(
+                    [
+                        "refund",
+                        "charge",
+                        "charged",
+                        "payment",
+                        "paid",
+                        "bill",
+                        "subscription",
+                        "card",
+                        "invoice",
+                        "receipt",
+                        "pricing",
+                        "money",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string()),
+                ),
+                "technical" => words.extend(
+                    [
+                        "error", "500", "502", "404", "debug", "login", "server", "bug", "crash",
+                        "timeout", "latency", "api", "endpoint", "config",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string()),
+                ),
+                "legal" => words.extend(
+                    [
+                        "law",
+                        "legal",
+                        "arbitration",
+                        "contract",
+                        "tos",
+                        "terms",
+                        "enforce",
+                        "jurisdiction",
+                        "privacy",
+                        "gdpr",
+                        "copyright",
+                        "license",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string()),
+                ),
                 _ => {}
             }
             (label, words)

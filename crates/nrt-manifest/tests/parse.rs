@@ -28,7 +28,10 @@ fn parses_spec_example_exactly() {
         .find(|s| s.id.as_str() == "legal")
         .expect("legal specialist");
     assert_eq!(legal.tier, Tier::Standby);
-    assert_eq!(legal.promotion_hint.as_deref(), Some("on_router_classification"));
+    assert_eq!(
+        legal.promotion_hint.as_deref(),
+        Some("on_router_classification")
+    );
 
     let billing = m
         .models
@@ -45,7 +48,11 @@ fn parses_spec_example_exactly() {
 
     // Dispatch rule
     match &m.routing.dispatch_rule {
-        DispatchRule::IntentDispatch { source, field, target_set } => {
+        DispatchRule::IntentDispatch {
+            source,
+            field,
+            target_set,
+        } => {
             assert_eq!(source.as_str(), "router");
             assert_eq!(field, "intent");
             assert_eq!(target_set, "specialists");
@@ -70,7 +77,10 @@ routing:
 "#;
     let err = load_from_str(yaml).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("duplicate"), "expected duplicate error, got {msg}");
+    assert!(
+        msg.contains("duplicate"),
+        "expected duplicate error, got {msg}"
+    );
 }
 
 #[test]
@@ -101,7 +111,6 @@ fn loads_manifest_from_workspace_path() {
         .unwrap()
         .join("manifests")
         .join("customer-support.yaml");
-    let m = load_from_path(&path)
-        .unwrap_or_else(|e| panic!("load {path:?}: {e}"));
+    let m = load_from_path(&path).unwrap_or_else(|e| panic!("load {path:?}: {e}"));
     assert_eq!(m.cluster, "customer-support-agent");
 }

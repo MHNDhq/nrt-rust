@@ -39,4 +39,3 @@ impl ModelMap {
         self.inner.is_empty()
     }
 }
-

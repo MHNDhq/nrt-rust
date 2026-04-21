@@ -5,8 +5,8 @@
 //! the Manifest-declared co-activation warming fired from the router hit.
 
 use nrt_backend_stub::{StubBackend, StubTiming};
-use nrt_cluster::ClusterManager;
-use nrt_core::{Backend, SessionId, Tier};
+use nrt_cluster::{ClusterManager, LruPolicy};
+use nrt_core::{Backend, NrtError, SessionId, Tier};
 use nrt_manifest::load_from_str;
 use std::{sync::Arc, time::Duration};
 
@@ -46,7 +46,11 @@ fn build_backend() -> Arc<dyn Backend> {
     let backend = StubBackend::new(StubTiming::instant());
     backend.register_router_intents(
         nrt_core::ModelId::new("router"),
-        vec!["billing".to_string(), "technical".to_string(), "legal".to_string()],
+        vec![
+            "billing".to_string(),
+            "technical".to_string(),
+            "legal".to_string(),
+        ],
     );
     Arc::new(backend)
 }
@@ -78,7 +82,11 @@ async fn chat_completion_dispatches_to_intent_specialist() {
     let cluster = ClusterManager::bootstrap(manifest, backend).await.unwrap();
 
     let result = cluster
-        .chat_completion(Some(SessionId::new()), "the customer wants a refund".to_string(), 8)
+        .chat_completion(
+            Some(SessionId::new()),
+            "the customer wants a refund".to_string(),
+            8,
+        )
         .await
         .unwrap();
 
@@ -168,10 +176,7 @@ async fn unknown_intent_with_fallback_dispatches_to_fallback() {
     // declared, the cluster should dispatch to the fallback rather than erroring.
     let manifest = load_from_str(SPEC_FIXTURE).unwrap();
     let backend = StubBackend::new(StubTiming::instant());
-    backend.register_router_intents(
-        nrt_core::ModelId::new("router"),
-        vec!["ghost".to_string()],
-    );
+    backend.register_router_intents(nrt_core::ModelId::new("router"), vec!["ghost".to_string()]);
     let cluster = ClusterManager::bootstrap(manifest, Arc::new(backend))
         .await
         .unwrap();
@@ -204,10 +209,7 @@ routing:
 "#;
     let manifest = load_from_str(yaml).unwrap();
     let backend = StubBackend::new(StubTiming::instant());
-    backend.register_router_intents(
-        nrt_core::ModelId::new("router"),
-        vec!["ghost".to_string()],
-    );
+    backend.register_router_intents(nrt_core::ModelId::new("router"), vec!["ghost".to_string()]);
     let cluster = ClusterManager::bootstrap(manifest, Arc::new(backend))
         .await
         .unwrap();
@@ -218,4 +220,357 @@ routing:
         .unwrap();
     assert_eq!(result.final_model.as_str(), "router");
     assert_eq!(result.intent.as_deref(), Some("ghost"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ephemeral_session_is_cleaned_up_after_response() {
+    let yaml = r#"
+cluster: ephemeral
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#;
+    let manifest = load_from_str(yaml).unwrap();
+    let cluster =
+        ClusterManager::bootstrap(manifest, Arc::new(StubBackend::new(StubTiming::instant())))
+            .await
+            .unwrap();
+
+    let _ = cluster
+        .chat_completion(None, "refund".to_string(), 4)
+        .await
+        .unwrap();
+
+    let snap = cluster.snapshot();
+    assert_eq!(
+        snap.sessions_live, 0,
+        "ephemeral sessions should auto-close"
+    );
+    assert_eq!(
+        snap.models
+            .iter()
+            .find(|m| m.id.as_str() == "router")
+            .unwrap()
+            .sessions,
+        0
+    );
+    assert_eq!(
+        snap.models
+            .iter()
+            .find(|m| m.id.as_str() == "billing")
+            .unwrap()
+            .sessions,
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_session_counts_live_models_until_end() {
+    let yaml = r#"
+cluster: sticky
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#;
+    let manifest = load_from_str(yaml).unwrap();
+    let cluster =
+        ClusterManager::bootstrap(manifest, Arc::new(StubBackend::new(StubTiming::instant())))
+            .await
+            .unwrap();
+    let session_id = SessionId::new();
+
+    let _ = cluster
+        .chat_completion(Some(session_id), "refund".to_string(), 4)
+        .await
+        .unwrap();
+
+    let snap = cluster.snapshot();
+    assert_eq!(snap.sessions_live, 1);
+    let router = snap
+        .models
+        .iter()
+        .find(|m| m.id.as_str() == "router")
+        .unwrap();
+    let billing = snap
+        .models
+        .iter()
+        .find(|m| m.id.as_str() == "billing")
+        .unwrap();
+    assert_eq!(router.sessions, 1);
+    assert_eq!(billing.sessions, 1);
+    assert_eq!(router.requests_total, 1);
+    assert_eq!(billing.requests_total, 1);
+
+    cluster.end_session(session_id).await.unwrap();
+
+    let post = cluster.snapshot();
+    assert_eq!(post.sessions_live, 0);
+    assert_eq!(
+        post.models
+            .iter()
+            .find(|m| m.id.as_str() == "router")
+            .unwrap()
+            .sessions,
+        0
+    );
+    assert_eq!(
+        post.models
+            .iter()
+            .find(|m| m.id.as_str() == "billing")
+            .unwrap()
+            .sessions,
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_manifest_updates_snapshot_and_dispatch() {
+    let before = load_from_str(
+        r#"
+cluster: before
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#,
+    )
+    .unwrap();
+    let after = load_from_str(
+        r#"
+cluster: after
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: technical, source: stub://t, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.technical
+"#,
+    )
+    .unwrap();
+    let cluster =
+        ClusterManager::bootstrap(before, Arc::new(StubBackend::new(StubTiming::instant())))
+            .await
+            .unwrap();
+
+    cluster.replace_manifest(after).await.unwrap();
+
+    let snap = cluster.snapshot();
+    assert_eq!(snap.cluster, "after");
+    assert!(snap.models.iter().any(|m| m.id.as_str() == "technical"));
+    assert!(!snap.models.iter().any(|m| m.id.as_str() == "billing"));
+    assert_eq!(cluster.manifest().cluster, "after");
+
+    let result = cluster
+        .chat_completion(None, "debug".to_string(), 4)
+        .await
+        .unwrap();
+    assert_eq!(result.final_model.as_str(), "technical");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lru_sweeper_evicts_idle_sessions() {
+    let yaml = r#"
+cluster: lru-demo
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#;
+    let manifest = load_from_str(yaml).unwrap();
+    let policy = LruPolicy {
+        max_active_sessions: 8,
+        idle_threshold: Duration::from_millis(60),
+        min_lifetime: Duration::from_millis(10),
+        sweep_interval: Duration::from_millis(20),
+    };
+    let cluster = ClusterManager::bootstrap_with_policy(
+        manifest,
+        Arc::new(StubBackend::new(StubTiming::instant())),
+        policy,
+    )
+    .await
+    .unwrap();
+
+    let session = SessionId::new();
+    cluster
+        .chat_completion(Some(session), "hello".to_string(), 4)
+        .await
+        .unwrap();
+
+    // Session is Active with recent last_request_at. Wait past the idle
+    // threshold + at least one sweep tick so the sweeper evicts it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let snap = cluster.snapshot();
+    assert!(
+        snap.metrics.lru_evictions >= 1,
+        "expected at least one LRU eviction, got {}",
+        snap.metrics.lru_evictions
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn lru_sweeper_respects_min_lifetime() {
+    let yaml = r#"
+cluster: lru-min-lifetime
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#;
+    let manifest = load_from_str(yaml).unwrap();
+    let policy = LruPolicy {
+        max_active_sessions: 8,
+        idle_threshold: Duration::from_millis(5),
+        min_lifetime: Duration::from_millis(500),
+        sweep_interval: Duration::from_millis(20),
+    };
+    let cluster = ClusterManager::bootstrap_with_policy(
+        manifest,
+        Arc::new(StubBackend::new(StubTiming::instant())),
+        policy,
+    )
+    .await
+    .unwrap();
+
+    let session = SessionId::new();
+    cluster
+        .chat_completion(Some(session), "hello".to_string(), 4)
+        .await
+        .unwrap();
+
+    // Idle threshold is 5ms but min_lifetime is 500ms — sleep 120ms and the
+    // session should still be Active (not yet eligible).
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let snap = cluster.snapshot();
+    assert_eq!(
+        snap.metrics.lru_evictions, 0,
+        "min_lifetime should protect a young session from eviction"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_manifest_drains_inflight_sessions() {
+    let before = load_from_str(
+        r#"
+cluster: drain-before
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: billing, source: stub://b, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.billing
+"#,
+    )
+    .unwrap();
+    let after = load_from_str(
+        r#"
+cluster: drain-after
+resources: { gpu_budget: 8GB, ram_budget: 16GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: technical, source: stub://t, tier: resident }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.technical
+"#,
+    )
+    .unwrap();
+    let cluster =
+        ClusterManager::bootstrap(before, Arc::new(StubBackend::new(StubTiming::instant())))
+            .await
+            .unwrap();
+
+    let session = SessionId::new();
+    cluster
+        .chat_completion(Some(session), "hello".to_string(), 4)
+        .await
+        .unwrap();
+    assert_eq!(cluster.snapshot().sessions_live, 1);
+
+    // Kick replace_manifest off in a task; it must block until we end the
+    // session so the drain completes.
+    let cluster_bg = cluster.clone();
+    let after_clone = after.clone();
+    let swap_task = tokio::spawn(async move { cluster_bg.replace_manifest(after_clone).await });
+
+    // Give the swap a chance to reach the drain-poll loop.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // While draining, new admissions must be refused.
+    let refused = cluster
+        .chat_completion(None, "blocked".to_string(), 4)
+        .await;
+    assert!(matches!(refused, Err(NrtError::Backend(_))));
+
+    cluster.end_session(session).await.unwrap();
+    swap_task.await.unwrap().unwrap();
+
+    let snap = cluster.snapshot();
+    assert_eq!(snap.cluster, "drain-after");
+    assert!(snap.models.iter().any(|m| m.id.as_str() == "technical"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ram_budget_exceeded_fails_bootstrap() {
+    // Stub backend reports 256 MB standby per model (see StubBackend::load).
+    // Eight specialists at 256 MB is 2048 MB; ram_budget of 1 GB (1024 MB)
+    // should trip the symmetric check.
+    let yaml = r#"
+cluster: ram-overflow
+resources: { gpu_budget: 24GB, ram_budget: 1GB }
+models:
+  router: { source: stub://r, tier: resident }
+  specialists:
+    - { id: a, source: stub://a, tier: standby }
+    - { id: b, source: stub://b, tier: standby }
+    - { id: c, source: stub://c, tier: standby }
+    - { id: d, source: stub://d, tier: standby }
+    - { id: e, source: stub://e, tier: standby }
+    - { id: f, source: stub://f, tier: standby }
+    - { id: g, source: stub://g, tier: standby }
+    - { id: h, source: stub://h, tier: standby }
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.a
+"#;
+    let manifest = load_from_str(yaml).unwrap();
+    let result =
+        ClusterManager::bootstrap(manifest, Arc::new(StubBackend::new(StubTiming::instant())))
+            .await;
+    let err = match result {
+        Ok(_) => panic!("expected RamBudgetExceeded, got Ok"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, NrtError::RamBudgetExceeded { .. }),
+        "expected RamBudgetExceeded, got {err:?}"
+    );
 }

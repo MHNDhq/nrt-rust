@@ -1,9 +1,4 @@
-use crate::{
-    dispatch::DispatchRule,
-    sizes::parse_mb,
-    validate::ManifestValidation,
-    ManifestError,
-};
+use crate::{dispatch::DispatchRule, sizes::parse_mb, validate::ManifestValidation, ManifestError};
 use nrt_core::{ModelId, Tier};
 use serde::{Deserialize, Serialize};
 
@@ -209,8 +204,8 @@ impl RawManifest {
             promotion_hint: None,
         });
 
-        let dispatch_rule = DispatchRule::parse(&self.routing.dispatch_rule)
-            .map_err(ManifestError::Invalid)?;
+        let dispatch_rule =
+            DispatchRule::parse(&self.routing.dispatch_rule).map_err(ManifestError::Invalid)?;
 
         let manifest = Manifest {
             cluster: self.cluster,

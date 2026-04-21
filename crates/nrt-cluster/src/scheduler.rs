@@ -21,6 +21,9 @@ pub struct LruPolicy {
     /// Floor on session lifetime — a newly-created session is never evicted
     /// for at least this long, even under pressure.
     pub min_lifetime: Duration,
+    /// How often the background LRU sweeper runs. Shorter intervals reduce
+    /// eviction latency at the cost of a handful of atomic reads per tick.
+    pub sweep_interval: Duration,
 }
 
 impl Default for LruPolicy {
@@ -29,6 +32,7 @@ impl Default for LruPolicy {
             max_active_sessions: 16,
             idle_threshold: Duration::from_secs(30),
             min_lifetime: Duration::from_millis(250),
+            sweep_interval: Duration::from_millis(500),
         }
     }
 }

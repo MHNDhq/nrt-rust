@@ -94,7 +94,11 @@ pub fn generate(
     // Ties are broken by declaration order in the intent list.
     let intent = profile.router.as_ref().and_then(|rc| {
         let lower = completion.to_lowercase();
-        if let Some(direct) = rc.intents.iter().find(|i| lower.contains(&i.to_lowercase())) {
+        if let Some(direct) = rc
+            .intents
+            .iter()
+            .find(|i| lower.contains(&i.to_lowercase()))
+        {
             return Some(direct.clone());
         }
         for (intent, triggers) in &rc.keyword_triggers {

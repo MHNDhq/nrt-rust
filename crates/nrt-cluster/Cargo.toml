@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Cluster Manager: Manifest-driven scheduler, co-activation warming, LRU KV eviction"
+description = "Cluster Manager: Manifest-driven scheduler, co-activation warming, session accounting"
 
 [dependencies]
 nrt-core.workspace = true

@@ -46,7 +46,9 @@ impl ManifestValidation {
         // Dispatch rule source must resolve.
         let mut warnings = Vec::new();
         match &m.routing.dispatch_rule {
-            DispatchRule::IntentDispatch { source, target_set, .. } => {
+            DispatchRule::IntentDispatch {
+                source, target_set, ..
+            } => {
                 if !known.contains(source) {
                     return Err(ManifestError::Invalid(format!(
                         "dispatch rule source {:?} is not a known model",

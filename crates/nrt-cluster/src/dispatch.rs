@@ -39,12 +39,7 @@ pub fn resolve(
                 });
             };
             let target = ModelId::new(intent);
-            if manifest
-                .models
-                .specialists
-                .iter()
-                .any(|s| s.id == target)
-            {
+            if manifest.models.specialists.iter().any(|s| s.id == target) {
                 Ok(Some(target))
             } else {
                 Err(NrtError::DispatchUnresolved {

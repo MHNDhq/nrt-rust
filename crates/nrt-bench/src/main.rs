@@ -11,7 +11,7 @@
 //! to benchmark: everything above the backend.
 
 use nrt_backend_stub::{StubBackend, StubTiming};
-use nrt_cluster::ClusterManager;
+use nrt_cluster::{settle, ClusterManager};
 use nrt_core::{Backend, SessionId};
 use nrt_manifest::load_from_path;
 use std::{
@@ -21,9 +21,18 @@ use std::{
 };
 
 const SUITES: &[(&str, &str)] = &[
-    ("customer-support (small, 5 models)", "manifests/customer-support.yaml"),
-    ("density-50 (stress, 51 models)", "manifests/density-50.yaml"),
-    ("warming-heavy (co-activation stress, 9 models)", "manifests/warming-heavy.yaml"),
+    (
+        "customer-support (small, 5 models)",
+        "manifests/customer-support.yaml",
+    ),
+    (
+        "density-50 (stress, 51 models)",
+        "manifests/density-50.yaml",
+    ),
+    (
+        "warming-heavy (co-activation stress, 9 models)",
+        "manifests/warming-heavy.yaml",
+    ),
 ];
 
 #[tokio::main]
@@ -86,15 +95,12 @@ async fn run_suite(manifest_path_str: &str) -> anyhow::Result<()> {
     for i in 0..reqs {
         let t0 = Instant::now();
         let res = cluster
-            .chat_completion(
-                Some(SessionId::new()),
-                format!("benchmark-prompt #{i}"),
-                8,
-            )
+            .chat_completion(Some(SessionId::new()), format!("benchmark-prompt #{i}"), 8)
             .await?;
         latencies.push(t0.elapsed());
         std::hint::black_box(&res);
     }
+    settle(&cluster).await;
     let total = bench_start.elapsed();
     let (p50, p95, p99) = percentiles(&mut latencies);
     println!(
@@ -112,7 +118,9 @@ async fn run_suite(manifest_path_str: &str) -> anyhow::Result<()> {
     // 3. Co-activation warming shape.
     let metrics = snap.metrics.clone();
     let new_metrics = cluster.snapshot().metrics;
-    let warms = new_metrics.co_activation_warms.saturating_sub(metrics.co_activation_warms);
+    let warms = new_metrics
+        .co_activation_warms
+        .saturating_sub(metrics.co_activation_warms);
     println!(
         "  co-activation warms fired across benchmark: {warms} (manifest declared {} warmers)",
         manifest

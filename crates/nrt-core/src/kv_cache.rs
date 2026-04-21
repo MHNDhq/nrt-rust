@@ -45,8 +45,12 @@ pub struct KvCacheHandle {
 /// Our stub backend implements these as in-memory Vec swaps.
 #[async_trait::async_trait]
 pub trait KvCache: Send + Sync {
-    async fn allocate(&self, session: crate::SessionId, model: &crate::ModelId, max_tokens: u32)
-        -> crate::NrtResult<KvCacheHandle>;
+    async fn allocate(
+        &self,
+        session: crate::SessionId,
+        model: &crate::ModelId,
+        max_tokens: u32,
+    ) -> crate::NrtResult<KvCacheHandle>;
 
     async fn evict_to_ram(&self, handle: &KvCacheHandle) -> crate::NrtResult<()>;
 

@@ -17,6 +17,12 @@ pub enum NrtError {
         budget_vram_mb: u64,
     },
 
+    #[error("standby weights exceed ram_budget ({standby_mb} MB needed, {budget_ram_mb} MB declared)")]
+    RamBudgetExceeded {
+        standby_mb: u64,
+        budget_ram_mb: u64,
+    },
+
     #[error("tier transition rejected: {from:?} -> {to:?} ({reason})")]
     InvalidTransition {
         from: crate::tier::Tier,
@@ -25,10 +31,7 @@ pub enum NrtError {
     },
 
     #[error("dispatch rule could not resolve intent {intent:?} against specialists {known:?}")]
-    DispatchUnresolved {
-        intent: String,
-        known: Vec<String>,
-    },
+    DispatchUnresolved { intent: String, known: Vec<String> },
 
     #[error("backend error: {0}")]
     Backend(String),

@@ -49,7 +49,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     let elapsed = t0.elapsed();
-    println!("[3/3] generated {} tokens in {:.2}s:", response.tokens_emitted, elapsed.as_secs_f32());
+    println!(
+        "[3/3] generated {} tokens in {:.2}s:",
+        response.tokens_emitted,
+        elapsed.as_secs_f32()
+    );
     println!("      {}", response.completion.trim());
     println!(
         "      throughput: {:.1} tok/s",

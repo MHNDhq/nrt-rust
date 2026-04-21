@@ -6,7 +6,7 @@ The prototype follows the exact layering described in the NRT spec — each crat
 
 ```
 +----------------------------------------------------+
-| nrt-server   (axum HTTP, OpenAI-compat)            |   HTTP
+| nrt-server   (axum HTTP, OpenAI-shaped subset)     |   HTTP
 +----------------------------------------------------+
 | nrt-cluster  (Cluster Manager, dispatch, warming)  |   Orchestration
 +----------------------------------------------------+
@@ -24,8 +24,9 @@ A real deployment swaps `nrt-backend-stub` for `nrt-backend-llama-cpp`, `nrt-bac
 
 `ClusterManager` is the core. It owns:
 
-- A `DashMap<ModelId, ModelEntry>` with the live tier and load handle per model. DashMap lets the HTTP layer read the registry concurrently with the scheduler writing to it — the read path is lock-free.
+- A `DashMap<ModelId, ModelEntry>` with the live tier and load handle per model. DashMap lets the HTTP layer read the registry concurrently with the scheduler writing to it without holding shard locks across `.await`.
 - A `DashMap<SessionId, Session>` with per-session state and last-touched time for LRU accounting.
+- An `RwLock<Manifest>` so manifest replacement updates the runtime view instead of only reloading models.
 - `Arc<dyn Backend>` — the backend that actually holds weights.
 - Broadcast channel for `SchedulerEvent`s, consumed by tracing and (later) external observers.
 
@@ -44,9 +45,25 @@ Richer forms (conditional, fan-out, regex) would extend the enum and the parser 
 
 ## Co-activation warming
 
-When the router fires, the cluster spawns a detached Tokio task that walks `Manifest::all_models()` and promotes any model whose `co_activation == router` from Standby to Resident. Cost is paid off the request's critical path. The caller's first token arrives from the specialist exactly as soon as dispatch resolves.
+When the router fires, the cluster spawns a detached Tokio task that walks `Manifest::all_models()` and promotes any model whose `co_activation == router` from Standby to Resident. Cost is paid off the request's critical path. The caller's first token arrives from the specialist exactly as soon as dispatch resolves. The runtime deduplicates in-flight warm tasks per model so repeated router hits do not double-promote the same Standby specialist.
 
 Correctness is covered by the `co_activation_warms_declared_models_after_router_fires` integration test. The `warming-heavy` manifest + benchmark scenario demonstrates the firing rate under load.
+
+## LRU sweeper
+
+A background Tokio task runs every `LruPolicy::sweep_interval` (default 500 ms) and walks the session registry. Any session whose state is `Active`, whose lifetime is past `min_lifetime`, and whose idle time is past `idle_threshold` is marked `SessionState::Idle`, has its `KvCacheHandle` dropped, increments `lru_evictions`, and emits a `SessionEvicted` event. Weights stay Resident; only session state moves, per Pillar 1's "LRU policy over session KV caches" mechanism.
+
+The sweeper holds only a `Weak<ClusterManager>` so it exits automatically when the last strong reference drops. On the stub backend, dropping the `KvCacheHandle` is the eviction — the stub does not allocate real KV. On a real backend (Candle + CUDA, llama-cpp), the same sweeper calls `backend.demote` to move the KV blob to system RAM.
+
+Tests: `lru_sweeper_evicts_idle_sessions` uses a short-interval policy and asserts `lru_evictions >= 1` after an idle wait; `lru_sweeper_respects_min_lifetime` asserts a young session is protected.
+
+## Drain-and-swap manifest replacement
+
+`replace_manifest` now flips a `draining: AtomicBool` before the model-unload loop. While draining, `chat_completion` rejects new admissions with a retry-worthy error. The method polls `metrics.sessions_live` at 25 ms intervals until it hits zero or the configurable timeout (default 10 s) expires. Only then does the unload + reload happen. The `replace_manifest_drains_inflight_sessions` test exercises the full flow: an in-flight session blocks the swap, a new admission is refused while draining, the swap completes once the session ends.
+
+## Budget symmetry
+
+Bootstrap sums resident VRAM and checks against `gpu_budget`; it also sums standby RAM and checks against `ram_budget`. Both must hold or `load_models_from_manifest` returns `ClusterAtCapacity` or `RamBudgetExceeded` respectively. This is the structural sanity check; it runs once at bootstrap and is not re-checked on every admission because the manifest is immutable between `replace_manifest` calls.
 
 ## Metrics
 
@@ -62,9 +79,9 @@ Atomic counters are the minimal viable observability surface — a real deployme
 
 On top of this chassis, to reach the NRT spec's Phase 0 success criteria:
 
-1. **Real backend** — llama.cpp FFI (`llama-cpp-2` crate) for the CPU/Metal/CUDA fast path. Replaces `StubBackend`; the orchestrator doesn't change.
-2. **KV cache eviction** — the cluster's LRU policy already exists in `scheduler::LruPolicy`; wire it to an eviction sweeper that calls `backend.demote(&mut handle, Tier::Standby)` on idle sessions.
-3. **Predictive KV eviction** — priority-aware sweep order using `ModelRef::priority` + the `co_activation` graph.
+1. **Real backend** — Candle + CUDA (pure Rust) or llama.cpp FFI (`llama-cpp-2` crate) for the CPU/Metal/CUDA fast path. Replaces `StubBackend`; the orchestrator doesn't change.
+2. **Kernel-level KV eviction** — the sweeper in this prototype already identifies eviction candidates; the real backend wires the eviction action to a KV-cache deallocation primitive (CUDA `cudaMemcpyAsync` to host, then `cudaFree` on device) instead of dropping a handle.
+3. **Priority-aware sweep order** — `ModelRef::priority` is parsed today; the sweeper currently sorts by last-touched. A priority-aware comparator uses the `Priority` field + the `co_activation` graph to avoid evicting critical specialists under pressure.
 4. **Stream-load** — `StubBackend::load` sleeps; a real backend does `mmap` + layer-by-layer scheduling. The trait signature doesn't change.
 5. **Hybrid-path execution plan cache** — new crate `nrt-profiler` owns the per-(model-hash, device) DAG classification.
 

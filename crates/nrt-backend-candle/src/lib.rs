@@ -4,16 +4,14 @@
 //! through the NRT `Backend` trait. No FFI, no Python — pure Rust end-to-end.
 //!
 //! The backend spawns CPU work on `tokio::task::spawn_blocking` because Candle's
-//! forward pass is synchronous and CPU/Metal-bound. Each model is protected by
-//! a `std::sync::Mutex` (not tokio's) because the lock is held for the entire
+//! forward pass is synchronous and CPU/Metal-bound. The shared weight state is
+//! protected by a `std::sync::Mutex` because the lock is held for the entire
 //! forward pass.
 //!
 //! Each `ModelId` is backed by a `ModelProfile` describing which GGUF file to
 //! fetch, which tokenizer to use, and optional intent labels the router may
-//! emit. The mapping is supplied at `CandleBackend::register` time so multiple
-//! tiny specialists can share the same underlying weights with different
-//! system prompts — a useful pattern for prototyping ensembles without
-//! downloading four separate models.
+//! emit. Profiles that point at the same artifacts now share one underlying
+//! weight/tokenizer bundle and differ only in prompt-shaping metadata.
 
 mod model_map;
 mod profile;
@@ -37,6 +35,7 @@ use nrt_core::{
 };
 use parking_lot::RwLock;
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -62,6 +61,8 @@ pub enum CandleError {
     UnknownModel(String),
     #[error("model {0} not loaded")]
     NotLoaded(String),
+    #[error("model {0} is remote-only and has no local weights")]
+    RemoteOnly(String),
     #[error("generation produced no tokens")]
     EmptyGeneration,
 }
@@ -72,12 +73,34 @@ impl From<CandleError> for NrtError {
     }
 }
 
-/// Held inside the backend for each loaded model. The `StdMutex` is held for
-/// the duration of a forward pass — fine because inference is the unit of work.
-struct LoadedModel {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SharedModelKey {
+    gguf_repo: String,
+    gguf_file: String,
+    tokenizer_repo: String,
+    tokenizer_file: String,
+}
+
+impl SharedModelKey {
+    fn from_profile(profile: &ModelProfile) -> Self {
+        Self {
+            gguf_repo: profile.gguf_repo.clone(),
+            gguf_file: profile.gguf_file.clone(),
+            tokenizer_repo: profile.tokenizer_repo.clone(),
+            tokenizer_file: profile.tokenizer_file.clone(),
+        }
+    }
+}
+
+struct SharedModel {
     weights: StdMutex<ModelWeights>,
     tokenizer: Tokenizer,
     device: Device,
+}
+
+struct LoadedModel {
+    shared: Arc<SharedModel>,
+    shared_key: SharedModelKey,
     /// Monotonic position for kv-cache indexing on the quantized_llama model.
     kv_pos: StdMutex<usize>,
     profile: ModelProfile,
@@ -86,7 +109,8 @@ struct LoadedModel {
 pub struct CandleBackend {
     device: Device,
     profiles: RwLock<ModelMap>,
-    loaded: RwLock<std::collections::HashMap<ModelId, Arc<LoadedModel>>>,
+    shared: RwLock<HashMap<SharedModelKey, Arc<SharedModel>>>,
+    loaded: RwLock<HashMap<ModelId, Arc<LoadedModel>>>,
     load_counter: AtomicU64,
 }
 
@@ -99,6 +123,7 @@ impl CandleBackend {
         Ok(Self {
             device,
             profiles: RwLock::new(profiles),
+            shared: RwLock::new(Default::default()),
             loaded: RwLock::new(Default::default()),
             load_counter: AtomicU64::new(0),
         })
@@ -133,56 +158,101 @@ impl CandleBackend {
         if let Some(m) = self.loaded.read().get(model).cloned() {
             return Ok(m);
         }
+
         let profile = self.profile_for(model)?;
-        let device = self.device.clone();
-        let model_for_blocking = model.clone();
+        if profile.remote_only {
+            return Err(CandleError::RemoteOnly(model.as_str().to_string()));
+        }
 
-        let loaded = tokio::task::spawn_blocking(move || -> Result<Arc<LoadedModel>, CandleError> {
-            let api = hf_hub::api::sync::Api::new()
-                .map_err(CandleError::Hub)?;
-            let gguf_repo = api.repo(hf_hub::Repo::new(
-                profile.gguf_repo.clone(),
-                hf_hub::RepoType::Model,
-            ));
-            let gguf_path: PathBuf = gguf_repo
-                .get(&profile.gguf_file)
-                .map_err(CandleError::Hub)?;
-            info!(
-                target: "candle",
-                model = %model_for_blocking,
-                path = %gguf_path.display(),
-                "gguf fetched"
-            );
-
-            let mut file = std::fs::File::open(&gguf_path)?;
-            let gguf = gguf_file::Content::read(&mut file)?;
-            let weights = ModelWeights::from_gguf(gguf, &mut file, &device)?;
-
-            // Fetch tokenizer via the tokenizers crate's own downloader.
-            // hf-hub 0.3 has URL-base parsing quirks with some repos; using
-            // `Tokenizer::from_pretrained` here sidesteps them entirely.
-            let tokenizer = Tokenizer::from_pretrained(&profile.tokenizer_repo, None)
-                .map_err(|e| CandleError::Tokenizer(format!(
-                    "from_pretrained({:?}): {e}", profile.tokenizer_repo
-                )))?;
-
-            Ok(Arc::new(LoadedModel {
-                weights: StdMutex::new(weights),
-                tokenizer,
-                device: device.clone(),
+        let shared_key = SharedModelKey::from_profile(&profile);
+        if let Some(shared) = self.shared.read().get(&shared_key).cloned() {
+            let loaded = Arc::new(LoadedModel {
+                shared,
+                shared_key,
                 kv_pos: StdMutex::new(0),
                 profile,
-            }))
-        })
-        .await
-        .map_err(|e| CandleError::Tokenizer(format!("spawn_blocking join: {e}")))??;
+            });
+            self.loaded.write().insert(model.clone(), loaded.clone());
+            return Ok(loaded);
+        }
 
+        let device = self.device.clone();
+        let model_for_blocking = model.clone();
+        let profile_for_blocking = profile.clone();
+
+        let built_shared =
+            tokio::task::spawn_blocking(move || -> Result<Arc<SharedModel>, CandleError> {
+                let api = hf_hub::api::sync::Api::new().map_err(CandleError::Hub)?;
+                let gguf_repo = api.repo(hf_hub::Repo::new(
+                    profile_for_blocking.gguf_repo.clone(),
+                    hf_hub::RepoType::Model,
+                ));
+                let gguf_path: PathBuf = gguf_repo
+                    .get(&profile_for_blocking.gguf_file)
+                    .map_err(CandleError::Hub)?;
+                info!(
+                    target: "candle",
+                    model = %model_for_blocking,
+                    path = %gguf_path.display(),
+                    "gguf fetched"
+                );
+
+                let mut file = std::fs::File::open(&gguf_path)?;
+                let gguf = gguf_file::Content::read(&mut file)?;
+                let weights = ModelWeights::from_gguf(gguf, &mut file, &device)?;
+
+                let tokenizer =
+                    Tokenizer::from_pretrained(&profile_for_blocking.tokenizer_repo, None)
+                        .map_err(|e| {
+                            CandleError::Tokenizer(format!(
+                                "from_pretrained({:?}): {e}",
+                                profile_for_blocking.tokenizer_repo
+                            ))
+                        })?;
+
+                Ok(Arc::new(SharedModel {
+                    weights: StdMutex::new(weights),
+                    tokenizer,
+                    device: device.clone(),
+                }))
+            })
+            .await
+            .map_err(|e| CandleError::Tokenizer(format!("spawn_blocking join: {e}")))??;
+
+        let shared = {
+            let mut shared_map = self.shared.write();
+            shared_map
+                .entry(shared_key.clone())
+                .or_insert_with(|| built_shared.clone())
+                .clone()
+        };
+
+        let loaded = Arc::new(LoadedModel {
+            shared,
+            shared_key,
+            kv_pos: StdMutex::new(0),
+            profile,
+        });
         self.loaded.write().insert(model.clone(), loaded.clone());
         Ok(loaded)
     }
 
     fn next_token(&self) -> u64 {
         self.load_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn warmable_model_ids(&self) -> Vec<ModelId> {
+        let profiles = self.profiles.read();
+        profiles
+            .ids()
+            .into_iter()
+            .filter(|id| {
+                profiles
+                    .get(id)
+                    .map(|profile| !profile.remote_only)
+                    .unwrap_or(false)
+            })
+            .collect()
     }
 }
 
@@ -203,9 +273,6 @@ impl Backend for CandleBackend {
     }
 
     async fn load(&self, model: &ModelId, tier: Tier) -> NrtResult<BackendLoadHandle> {
-        // Remote tier: no local weights, no download. Inference returns a
-        // canned response indicating where the real call would go (e.g. an
-        // upstream Claude endpoint). This matches the spec's fallback shape.
         if matches!(tier, Tier::Remote) {
             return Ok(BackendLoadHandle {
                 model_id: model.clone(),
@@ -215,6 +282,7 @@ impl Backend for CandleBackend {
                 tier,
             });
         }
+
         let loaded = self.load_weights(model).await?;
         let resident_vram_mb = match tier {
             Tier::Resident | Tier::Active => loaded.profile.nominal_vram_mb,
@@ -225,23 +293,19 @@ impl Backend for CandleBackend {
             Tier::Resident | Tier::Active => 0,
             Tier::Remote => 0,
         };
-        let handle = BackendLoadHandle {
+        Ok(BackendLoadHandle {
             model_id: model.clone(),
             resident_vram_mb,
             standby_ram_mb,
             load_token: self.next_token(),
             tier,
-        };
-        Ok(handle)
+        })
     }
 
     async fn promote(&self, handle: &mut BackendLoadHandle, to: Tier) -> NrtResult<()> {
         if handle.tier == to {
             return Ok(());
         }
-        // Candle holds weights in memory always (CPU or Metal unified memory);
-        // promotion is a bookkeeping move, not a data move. We still simulate a
-        // small cost for the unified-memory pin so the metrics reflect reality.
         if matches!((handle.tier, to), (Tier::Standby, Tier::Resident)) {
             tokio::time::sleep(std::time::Duration::from_millis(15)).await;
             let profile = self.profile_for(&handle.model_id)?;
@@ -286,7 +350,20 @@ impl Backend for CandleBackend {
     }
 
     async fn unload(&self, handle: &BackendLoadHandle) -> NrtResult<()> {
-        self.loaded.write().remove(&handle.model_id);
+        let removed = {
+            let mut loaded = self.loaded.write();
+            loaded.remove(&handle.model_id)
+        };
+        if let Some(loaded_model) = removed {
+            let still_used = self
+                .loaded
+                .read()
+                .values()
+                .any(|candidate| candidate.shared_key == loaded_model.shared_key);
+            if !still_used {
+                self.shared.write().remove(&loaded_model.shared_key);
+            }
+        }
         Ok(())
     }
 
@@ -300,10 +377,7 @@ impl Backend for CandleBackend {
             return Ok(InferenceResponse {
                 session_id: req.session_id,
                 model_id: req.model_id,
-                completion: format!(
-                    "[remote-fallback] would dispatch to {}",
-                    handle.model_id
-                ),
+                completion: format!("[remote-fallback] would dispatch to {}", handle.model_id),
                 tokens_emitted: 0,
                 intent: None,
                 latency_ms: 1,
@@ -315,11 +389,12 @@ impl Backend for CandleBackend {
                 handle.tier
             )));
         }
+
         let loaded = self.loaded_for(&handle.model_id)?;
         let prompt = req.prompt.clone();
         let session_id = req.session_id;
         let model_id = req.model_id.clone();
-        let max_tokens = req.max_tokens.min(128).max(1);
+        let max_tokens = req.max_tokens.clamp(1, 128);
 
         let t0 = Instant::now();
         let (completion, intent, tokens_emitted) = tokio::task::spawn_blocking(move || {
@@ -349,16 +424,13 @@ impl Backend for CandleBackend {
 
 impl CandleBackend {
     /// Pre-populate the `loaded` map by fetching weights for every registered
-    /// model ahead of cluster bootstrap. Useful for the demo server so the
-    /// first `/v1/chat/completions` call doesn't pay the download cost.
+    /// warmable model ahead of cluster bootstrap.
     pub async fn warm_all_registered(&self) -> Result<Vec<ModelId>, CandleError> {
-        let ids: Vec<ModelId> = self.profiles.read().ids();
+        let ids = self.warmable_model_ids();
         let mut warmed = Vec::with_capacity(ids.len());
         for id in &ids {
             match self.load_weights(id).await {
-                Ok(_) => {
-                    warmed.push(id.clone());
-                }
+                Ok(_) => warmed.push(id.clone()),
                 Err(e) => {
                     warn!(target: "candle", model = %id, error = %e, "prewarm failed");
                     return Err(e);
@@ -369,25 +441,25 @@ impl CandleBackend {
     }
 
     /// Register a lightweight profile for Remote-tier models so `load_weights`
-    /// is never called on them. The profile is required by other parts of the
-    /// backend (tier accounting) but weights are never fetched.
+    /// is never called on them.
     pub fn register_remote(&self, id: ModelId) {
         let mut profile = default_tinyllama_profile();
         profile.nominal_vram_mb = 0;
         profile.nominal_ram_mb = 0;
+        profile.remote_only = true;
         self.profiles.write().insert(id, profile);
     }
 }
 
 impl session::InferenceHost for LoadedModel {
     fn tokenizer(&self) -> &Tokenizer {
-        &self.tokenizer
+        &self.shared.tokenizer
     }
     fn device(&self) -> &Device {
-        &self.device
+        &self.shared.device
     }
     fn weights(&self) -> &StdMutex<ModelWeights> {
-        &self.weights
+        &self.shared.weights
     }
     fn kv_pos(&self) -> &StdMutex<usize> {
         &self.kv_pos
@@ -397,10 +469,8 @@ impl session::InferenceHost for LoadedModel {
     }
 }
 
-// Re-export for downstream so consumers don't need candle-core directly.
 pub use candle_core::Device as CandleDevice;
 
-// Helper for tests.
 pub fn generate_from_host(
     host: &dyn session::InferenceHost,
     prompt: &str,
@@ -409,6 +479,35 @@ pub fn generate_from_host(
     session::generate(host, prompt, max_tokens).map_err(Into::into)
 }
 
-// Silence dead_code for LogitsProcessor/Sampling/Tensor imports that session.rs uses.
 #[allow(dead_code)]
 fn _keep_imports(_: LogitsProcessor, _: Sampling, _: Tensor) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_key_collapses_profiles_with_same_artifacts() {
+        let router = router_profile(vec!["billing".into()]);
+        let specialist = specialist_profile("billing");
+        assert_eq!(
+            SharedModelKey::from_profile(&router),
+            SharedModelKey::from_profile(&specialist)
+        );
+    }
+
+    #[test]
+    fn warmable_model_ids_skip_remote_only_profiles() {
+        let mut profiles = ModelMap::new();
+        profiles.insert(
+            ModelId::new("router"),
+            router_profile(vec!["billing".into()]),
+        );
+        let backend = CandleBackend::new(profiles).expect("backend");
+        backend.register_remote(ModelId::new("fallback"));
+
+        let ids = backend.warmable_model_ids();
+        assert!(ids.iter().any(|id| id.as_str() == "router"));
+        assert!(!ids.iter().any(|id| id.as_str() == "fallback"));
+    }
+}

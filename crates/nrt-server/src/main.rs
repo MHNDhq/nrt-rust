@@ -4,7 +4,7 @@
 //!   nrt-server --manifest manifests/customer-support.yaml [--addr 127.0.0.1:9000]
 //!
 //! Endpoints:
-//!   POST /v1/chat/completions  — OpenAI-compatible (subset)
+//!   POST /v1/chat/completions  — OpenAI-shaped subset
 //!   GET  /v1/cluster           — snapshot of tiers, sessions, metrics
 //!   GET  /v1/manifest          — effective Manifest as JSON
 //!   GET  /healthz              — liveness probe
@@ -48,9 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let backend: Arc<dyn Backend> = match args.backend.as_str() {
         "stub" => build_stub_backend(&manifest),
         "candle" => build_candle_backend(&manifest).await?,
-        other => anyhow::bail!(
-            "unknown --backend {other:?}; expected one of: stub, candle"
-        ),
+        other => anyhow::bail!("unknown --backend {other:?}; expected one of: stub, candle"),
     };
     let cluster = ClusterManager::bootstrap(manifest, backend).await?;
 
@@ -109,7 +107,10 @@ async fn build_candle_backend(manifest: &Manifest) -> anyhow::Result<Arc<dyn Bac
         .collect();
 
     let mut profiles = ModelMap::new();
-    profiles.insert(manifest.routing.entry.clone(), router_profile(intents.clone()));
+    profiles.insert(
+        manifest.routing.entry.clone(),
+        router_profile(intents.clone()),
+    );
     for s in &manifest.models.specialists {
         profiles.insert(s.id.clone(), specialist_profile(s.id.as_str()));
     }
@@ -163,7 +164,9 @@ impl Args {
                     }
                 }
                 "--help" | "-h" => {
-                    println!("nrt-server [--manifest PATH] [--addr HOST:PORT] [--backend stub|candle]");
+                    println!(
+                        "nrt-server [--manifest PATH] [--addr HOST:PORT] [--backend stub|candle]"
+                    );
                     std::process::exit(0);
                 }
                 other => {
@@ -172,7 +175,11 @@ impl Args {
                 }
             }
         }
-        Self { manifest_path, addr, backend }
+        Self {
+            manifest_path,
+            addr,
+            backend,
+        }
     }
 }
 
@@ -189,6 +196,8 @@ struct ChatCompletionRequest {
     messages: Vec<ChatMessage>,
     #[serde(default = "default_max_tokens")]
     max_tokens: u32,
+    #[serde(default)]
+    stream: bool,
 }
 
 fn default_max_tokens() -> u32 {
@@ -197,7 +206,6 @@ fn default_max_tokens() -> u32 {
 
 #[derive(Debug, Deserialize)]
 struct ChatMessage {
-    #[allow(dead_code)]
     role: String,
     content: String,
 }
@@ -227,14 +235,8 @@ async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<Json<ChatCompletionResponse>, AppError> {
-    // Concatenate user messages as the prompt. Full ChatML conversion is a
-    // future milestone — the prototype exercises the orchestration path.
-    let prompt = req
-        .messages
-        .into_iter()
-        .map(|m| m.content)
-        .collect::<Vec<_>>()
-        .join("\n");
+    validate_chat_request(&state.cluster, &req)?;
+    let prompt = format_chat_prompt(&req.messages);
 
     let result = state
         .cluster
@@ -255,9 +257,6 @@ async fn chat_completions(
         }],
         nrt: result,
     };
-    // Touch `req.model` to avoid dead_code warning; it's accepted but the
-    // router-declared entry always wins in v0.
-    let _ = req.model;
     Ok(Json(resp))
 }
 
@@ -266,7 +265,7 @@ async fn cluster_snapshot(State(state): State<AppState>) -> Json<ClusterSnapshot
 }
 
 async fn manifest_snapshot(State(state): State<AppState>) -> Json<Manifest> {
-    Json(state.cluster.manifest().clone())
+    Json(state.cluster.manifest())
 }
 
 async fn healthz() -> &'static str {
@@ -283,24 +282,125 @@ async fn dashboard() -> axum::response::Html<&'static str> {
 // Error plumbing
 //
 
-struct AppError(anyhow::Error);
+fn validate_chat_request(
+    cluster: &ClusterHandle,
+    req: &ChatCompletionRequest,
+) -> Result<(), AppError> {
+    if req.messages.is_empty() {
+        return Err(AppError::bad_request(
+            "messages must contain at least one chat message",
+        ));
+    }
+    if req.stream {
+        return Err(AppError::bad_request(
+            "stream=true is not supported by this prototype",
+        ));
+    }
+    validate_requested_model(req.model.as_deref(), &cluster.manifest().routing.entry)
+}
+
+fn validate_requested_model(requested: Option<&str>, entry: &ModelId) -> Result<(), AppError> {
+    if let Some(model) = requested {
+        if model != entry.as_str() {
+            return Err(AppError::bad_request(format!(
+                "model {:?} is not supported by this routed endpoint; use {:?}",
+                model,
+                entry.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn format_chat_prompt(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .map(|message| {
+            format!(
+                "<|{}|>\n{}",
+                normalize_role(&message.role),
+                message.content.trim_end()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_role(role: &str) -> &'static str {
+    if role.eq_ignore_ascii_case("system") {
+        "system"
+    } else if role.eq_ignore_ascii_case("assistant") {
+        "assistant"
+    } else if role.eq_ignore_ascii_case("tool") {
+        "tool"
+    } else {
+        "user"
+    }
+}
+
+struct AppError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AppError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+}
 
 impl<E: Into<anyhow::Error>> From<E> for AppError {
     fn from(e: E) -> Self {
-        Self(e.into())
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: e.into().to_string(),
+        }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let body = serde_json::json!({
-            "error": self.0.to_string(),
+            "error": self.message,
         });
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+        (self.status, Json(body)).into_response()
     }
 }
 
-// Silence unused-import warning when the binary is compiled on platforms that
-// don't expose ModelId through the handler signatures.
-#[allow(dead_code)]
-fn _model_id_import_marker(_: &ModelId) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requested_model_must_match_manifest_entry() {
+        let entry = ModelId::new("router");
+        assert!(validate_requested_model(Some("router"), &entry).is_ok());
+        assert!(validate_requested_model(None, &entry).is_ok());
+        assert!(validate_requested_model(Some("billing"), &entry).is_err());
+    }
+
+    #[test]
+    fn prompt_format_preserves_role_boundaries() {
+        let prompt = format_chat_prompt(&[
+            ChatMessage {
+                role: "system".into(),
+                content: "be concise".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "refund please".into(),
+            },
+            ChatMessage {
+                role: "assistant".into(),
+                content: "What order number?".into(),
+            },
+        ]);
+
+        assert!(prompt.contains("<|system|>\nbe concise"));
+        assert!(prompt.contains("<|user|>\nrefund please"));
+        assert!(prompt.contains("<|assistant|>\nWhat order number?"));
+    }
+}

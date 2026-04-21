@@ -117,8 +117,7 @@ impl StubBackend {
 
     fn is_router(&self, id: &ModelId) -> bool {
         let state = self.inner.read();
-        state.router_intents.contains_key(id)
-            || id.as_str().starts_with("router")
+        state.router_intents.contains_key(id) || id.as_str().starts_with("router")
     }
 
     fn pick_intent(&self, id: &ModelId, prompt: &str) -> Option<String> {

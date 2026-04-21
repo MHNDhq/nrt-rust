@@ -20,18 +20,21 @@ pub(crate) fn parse_mb(raw: &str) -> Result<u64, ManifestError> {
     }
 
     // Split the trailing alphabetic run off the leading digit run.
-    let split_at = s
-        .find(|c: char| c.is_ascii_alphabetic())
-        .ok_or_else(|| ManifestError::BadSize {
-            input: raw.to_string(),
-            reason: "no unit suffix".into(),
-        })?;
+    let split_at =
+        s.find(|c: char| c.is_ascii_alphabetic())
+            .ok_or_else(|| ManifestError::BadSize {
+                input: raw.to_string(),
+                reason: "no unit suffix".into(),
+            })?;
 
     let (num_part, unit_part) = s.split_at(split_at);
-    let n: f64 = num_part.trim().parse().map_err(|_| ManifestError::BadSize {
-        input: raw.to_string(),
-        reason: format!("could not parse {num_part:?} as number"),
-    })?;
+    let n: f64 = num_part
+        .trim()
+        .parse()
+        .map_err(|_| ManifestError::BadSize {
+            input: raw.to_string(),
+            reason: format!("could not parse {num_part:?} as number"),
+        })?;
 
     let unit = unit_part.trim().to_ascii_lowercase();
     let multiplier_mb = match unit.as_str() {

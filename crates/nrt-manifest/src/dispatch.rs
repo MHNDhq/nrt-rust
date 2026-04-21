@@ -33,17 +33,14 @@ pub enum DispatchRule {
     },
     /// `router.output.intent -> specialists.billing`
     /// Unconditional dispatch, ignores source field.
-    FixedRoute {
-        source: ModelId,
-        target: ModelId,
-    },
+    FixedRoute { source: ModelId, target: ModelId },
 }
 
 impl DispatchRule {
     pub fn parse(raw: &str) -> Result<Self, String> {
-        let (lhs, rhs) = raw.split_once("->").ok_or_else(|| {
-            format!("dispatch rule missing '->': {raw:?}")
-        })?;
+        let (lhs, rhs) = raw
+            .split_once("->")
+            .ok_or_else(|| format!("dispatch rule missing '->': {raw:?}"))?;
         let lhs = lhs.trim();
         let rhs = rhs.trim();
 
@@ -59,9 +56,9 @@ impl DispatchRule {
 
         // RHS: <set>.{<var>} for dispatch, or <set>.<id> for fixed.
         if let Some(rest) = rhs.strip_suffix('}') {
-            let (set, var) = rest.split_once(".{").ok_or_else(|| {
-                format!("dispatch rule RHS is malformed: {rhs:?}")
-            })?;
+            let (set, var) = rest
+                .split_once(".{")
+                .ok_or_else(|| format!("dispatch rule RHS is malformed: {rhs:?}"))?;
             // The captured var should equal the LHS field name — gentle warning
             // if not, but we don't hard-fail.
             let var = var.trim();
@@ -101,7 +98,11 @@ mod tests {
     fn parses_intent_dispatch() {
         let r = DispatchRule::parse("router.output.intent -> specialists.{intent}").unwrap();
         match r {
-            DispatchRule::IntentDispatch { source, field, target_set } => {
+            DispatchRule::IntentDispatch {
+                source,
+                field,
+                target_set,
+            } => {
                 assert_eq!(source.as_str(), "router");
                 assert_eq!(field, "intent");
                 assert_eq!(target_set, "specialists");
