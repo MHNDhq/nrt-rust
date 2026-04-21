@@ -16,6 +16,7 @@ edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
 authors = ["Muhannad"]
+repository = "https://github.com/MHNDhq/nrt-rust"
 description = "Neurometric Runtime prototype: Manifest-driven SLM cluster manager in Rust"
 
 [workspace.dependencies]
