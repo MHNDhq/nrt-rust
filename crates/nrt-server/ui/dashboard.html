@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NRT · Cluster Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-0: #0a0d12;
+    --bg-1: #11151c;
+    --bg-2: #181d27;
+    --bg-3: #1f2430;
+    --border: #2a313d;
+    --fg-0: #e7ecf3;
+    --fg-1: #a0a8b4;
+    --fg-2: #6b7280;
+    --accent: #7c9dff;
+    --accent-dim: #4a6bc8;
+    --tier-resident: #6ee7a5;
+    --tier-active: #7c9dff;
+    --tier-standby: #f5b044;
+    --tier-remote: #7a8394;
+    --danger: #ff7c7c;
+    --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg-0);
+    color: var(--fg-0);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* --- header --- */
+  header {
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .brand {
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .cluster-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-1);
+  }
+  .cluster-label .name {
+    color: var(--fg-0);
+    margin-left: 6px;
+    font-weight: 500;
+  }
+  .backend-pill {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-1);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .backend-pill span.b {
+    color: var(--fg-0);
+    background: var(--bg-3);
+    padding: 3px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    margin-left: 6px;
+  }
+  /* --- grid --- */
+  main {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 16px;
+    padding: 16px 24px 48px;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; }
+  }
+  section {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  section > header {
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-1);
+    position: static;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  section > header .sub {
+    font-size: 10px;
+    color: var(--fg-2);
+    font-weight: 400;
+  }
+  /* --- models grid --- */
+  .models {
+    display: flex;
+    flex-direction: column;
+  }
+  .models-body {
+    padding: 4px 0;
+  }
+  .model-row {
+    display: grid;
+    grid-template-columns: 24px 140px 90px 1fr 72px 70px;
+    align-items: center;
+    gap: 14px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    transition: background 180ms ease;
+  }
+  .model-row:last-child { border-bottom: none; }
+  .model-row:hover { background: var(--bg-2); }
+  .tier-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--tier-remote);
+  }
+  .tier-dot.resident { background: var(--tier-resident); box-shadow: 0 0 8px var(--tier-resident); }
+  .tier-dot.active { background: var(--tier-active); box-shadow: 0 0 10px var(--tier-active); animation: pulse 1.4s ease-in-out infinite; }
+  .tier-dot.standby { background: var(--tier-standby); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  .model-name { color: var(--fg-0); font-weight: 500; }
+  .tier-label {
+    color: var(--fg-1);
+    text-transform: uppercase;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+  }
+  .tier-label.resident { color: var(--tier-resident); }
+  .tier-label.active { color: var(--tier-active); }
+  .tier-label.standby { color: var(--tier-standby); }
+  .tier-label.remote { color: var(--tier-remote); }
+  .vram-bar {
+    height: 6px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .vram-fill {
+    height: 100%;
+    background: var(--accent-dim);
+    transition: width 400ms ease;
+  }
+  .vram-fill.resident { background: var(--tier-resident); }
+  .vram-fill.standby { background: var(--tier-standby); }
+  .mb-num {
+    color: var(--fg-1);
+    text-align: right;
+    font-size: 11.5px;
+  }
+  .session-count {
+    text-align: right;
+    color: var(--fg-1);
+  }
+  .session-count.hot {
+    color: var(--tier-active);
+  }
+  /* --- metrics --- */
+  .metrics-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 10px;
+    gap: 2px;
+  }
+  .metric {
+    padding: 10px 12px;
+    background: var(--bg-2);
+    border-radius: 3px;
+  }
+  .metric .label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fg-2);
+  }
+  .metric .value {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--fg-0);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric .value.accent {
+    color: var(--accent);
+  }
+  /* --- prompt --- */
+  .prompt-box {
+    padding: 12px 14px;
+  }
+  .prompt-row {
+    display: flex;
+    gap: 8px;
+  }
+  .prompt-input {
+    flex: 1;
+    background: var(--bg-0);
+    border: 1px solid var(--border);
+    color: var(--fg-0);
+    padding: 10px 12px;
+    border-radius: 3px;
+    font-family: var(--sans);
+    font-size: 13px;
+  }
+  .prompt-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .btn {
+    background: var(--accent);
+    color: var(--bg-0);
+    border: none;
+    padding: 10px 18px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 160ms ease;
+  }
+  .btn:hover { background: #9db4ff; }
+  .btn:disabled { background: var(--border); color: var(--fg-2); cursor: not-allowed; }
+  .prompt-hint {
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--fg-2);
+    display: flex;
+    gap: 10px;
+  }
+  .prompt-hint .chip {
+    background: var(--bg-3);
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    color: var(--fg-1);
+    transition: all 160ms ease;
+  }
+  .prompt-hint .chip:hover {
+    border-color: var(--accent);
+    color: var(--fg-0);
+  }
+  /* --- request log --- */
+  .log {
+    display: flex;
+    flex-direction: column;
+  }
+  .log-body {
+    max-height: 560px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .log-row {
+    border-bottom: 1px solid var(--border);
+    padding: 12px 16px;
+    display: grid;
+    grid-template-columns: 80px 1fr 60px;
+    gap: 12px;
+    align-items: start;
+  }
+  .log-row:hover { background: var(--bg-2); }
+  .log-row.pending { opacity: 0.6; }
+  .log-time { color: var(--fg-2); font-size: 11px; }
+  .log-main .hops {
+    color: var(--fg-0);
+  }
+  .log-main .arrow {
+    color: var(--accent);
+    margin: 0 6px;
+  }
+  .log-main .prompt-text {
+    color: var(--fg-1);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    margin-top: 4px;
+    line-height: 1.45;
+    word-break: break-word;
+    max-height: 2.9em;
+    overflow: hidden;
+  }
+  .log-main .resp-text {
+    color: var(--fg-0);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    margin-top: 6px;
+    line-height: 1.5;
+    background: var(--bg-3);
+    padding: 8px 10px;
+    border-radius: 3px;
+    border-left: 2px solid var(--accent);
+    word-break: break-word;
+  }
+  .log-main .intent-pill {
+    display: inline-block;
+    font-size: 10.5px;
+    background: var(--bg-3);
+    color: var(--tier-active);
+    padding: 2px 6px;
+    border-radius: 2px;
+    margin-top: 3px;
+    letter-spacing: 0.04em;
+  }
+  .log-lat {
+    text-align: right;
+    color: var(--fg-1);
+    font-variant-numeric: tabular-nums;
+  }
+  .log-lat.slow { color: var(--tier-standby); }
+  .empty {
+    padding: 24px 16px;
+    color: var(--fg-2);
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: center;
+  }
+  /* --- manifest viewer --- */
+  .manifest-body {
+    padding: 12px 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--fg-1);
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .manifest-body pre {
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--fg-1);
+  }
+  .manifest-body .k { color: var(--accent); }
+  .manifest-body .s { color: var(--tier-resident); }
+  /* --- footer --- */
+  footer {
+    text-align: center;
+    padding: 20px;
+    color: var(--fg-2);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">NRT</div>
+  <div class="cluster-label">cluster<span class="name" id="cluster-name">loading…</span></div>
+  <div class="backend-pill">backend<span class="b" id="backend-name">—</span></div>
+</header>
+
+<main>
+  <section class="models">
+    <header>
+      <span>Models</span>
+      <span class="sub" id="models-sub">—</span>
+    </header>
+    <div class="models-body" id="models-body"></div>
+  </section>
+
+  <section>
+    <header>
+      <span>Metrics</span>
+      <span class="sub">live · poll 1.5s</span>
+    </header>
+    <div class="metrics-body" id="metrics-body"></div>
+  </section>
+
+  <section class="log" style="grid-column: 1 / -1;">
+    <header>
+      <span>Send Request</span>
+      <span class="sub">POST /v1/chat/completions</span>
+    </header>
+    <div class="prompt-box">
+      <form id="prompt-form" class="prompt-row">
+        <input
+          id="prompt-input"
+          class="prompt-input"
+          type="text"
+          placeholder="Ask the cluster — e.g. 'I was charged twice for my subscription'"
+          autocomplete="off"
+          value="I was charged twice for my subscription last month. Can I get a refund?">
+        <button type="submit" class="btn" id="send-btn">Send</button>
+      </form>
+      <div class="prompt-hint">
+        <span>Presets:</span>
+        <span class="chip" data-prompt="I was charged twice for my subscription last month. Can I get a refund?">billing</span>
+        <span class="chip" data-prompt="My login page shows a 502 error after updating the app. How do I debug this?">technical</span>
+        <span class="chip" data-prompt="Is the arbitration clause in your ToS enforceable in California?">legal</span>
+        <span class="chip" data-prompt="What is the capital of France?">out-of-domain (expect fallback)</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="log" style="grid-column: 1 / -1;">
+    <header>
+      <span>Request Log</span>
+      <span class="sub" id="log-sub">0 requests</span>
+    </header>
+    <div class="log-body" id="log-body">
+      <div class="empty">No requests yet. Send one above.</div>
+    </div>
+  </section>
+
+  <section style="grid-column: 1 / -1;">
+    <header>
+      <span>Effective Manifest</span>
+      <span class="sub">GET /v1/manifest</span>
+    </header>
+    <div class="manifest-body"><pre id="manifest-pre">loading…</pre></div>
+  </section>
+</main>
+
+<footer>Neurometric Runtime prototype · v0.1.0</footer>
+
+<script>
+const state = {
+  requests: [],
+  nextId: 1,
+};
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${url}`);
+  return r.json();
+}
+
+function tierClass(t) { return (t || '').toLowerCase(); }
+
+function renderModels(snap) {
+  const container = document.getElementById('models-body');
+  const sub = document.getElementById('models-sub');
+  const rows = snap.models.map(m => {
+    const budgetMb = 24 * 1024;
+    const pctResident = Math.min(100, (m.resident_vram_mb / budgetMb) * 100);
+    const pctStandby = Math.min(100, (m.standby_ram_mb / (32 * 1024)) * 100);
+    const tier = tierClass(m.tier);
+    const showBar = tier === 'resident' || tier === 'standby' || tier === 'active';
+    const pct = tier === 'standby' ? pctStandby : pctResident;
+    const mb = tier === 'standby' ? m.standby_ram_mb : m.resident_vram_mb;
+    return `
+      <div class="model-row">
+        <div class="tier-dot ${tier}"></div>
+        <div class="model-name">${m.id}</div>
+        <div class="tier-label ${tier}">${m.tier}</div>
+        <div class="vram-bar" ${showBar ? '' : 'style="visibility:hidden"'}>
+          <div class="vram-fill ${tier}" style="width:${pct}%"></div>
+        </div>
+        <div class="mb-num">${mb ? mb + ' MB' : '—'}</div>
+        <div class="session-count ${m.sessions > 0 ? 'hot' : ''}">${m.sessions} sess</div>
+      </div>
+    `;
+  }).join('');
+  container.innerHTML = rows;
+  const r = snap.models.filter(m => m.tier === 'resident').length;
+  const s = snap.models.filter(m => m.tier === 'standby').length;
+  sub.textContent = `${snap.models.length} total · ${r} resident · ${s} standby`;
+}
+
+function renderMetrics(snap) {
+  const m = snap.metrics;
+  const items = [
+    ['Requests',           m.requests_total, 'accent'],
+    ['Router Hits',        m.router_hits,    'accent'],
+    ['Dispatch Hits',      m.dispatch_hits,  ''],
+    ['Dispatch Fallbacks', m.dispatch_fallbacks, ''],
+    ['Co-activation Warms', m.co_activation_warms, 'accent'],
+    ['Promotions',         m.promotions,     ''],
+    ['LRU Evictions',      m.lru_evictions,  ''],
+    ['Sessions Live',      m.sessions_live,  m.sessions_live > 0 ? 'accent' : ''],
+  ];
+  document.getElementById('metrics-body').innerHTML = items.map(([l, v, cls]) => `
+    <div class="metric">
+      <div class="label">${l}</div>
+      <div class="value ${cls}">${v}</div>
+    </div>
+  `).join('');
+}
+
+function renderHeader(snap, manifest) {
+  document.getElementById('cluster-name').textContent = snap.cluster;
+  // Backend name inferred from the model's backend name is not in the snapshot;
+  // we fetch healthz/manifest separately.
+  document.getElementById('backend-name').textContent = (manifest && manifest.models.router.source.startsWith('stub://')) ? 'stub' : 'candle';
+}
+
+function renderManifest(m) {
+  const yaml = JSON.stringify(m, null, 2);
+  document.getElementById('manifest-pre').textContent = yaml;
+}
+
+function formatTime(d) {
+  const h = String(d.getHours()).padStart(2, '0');
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const s = String(d.getSeconds()).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+function renderLog() {
+  const container = document.getElementById('log-body');
+  const sub = document.getElementById('log-sub');
+  if (!state.requests.length) {
+    container.innerHTML = '<div class="empty">No requests yet. Send one above.</div>';
+    sub.textContent = '0 requests';
+    return;
+  }
+  const rows = state.requests.slice().reverse().map(r => {
+    const time = formatTime(r.t);
+    if (r.pending) {
+      return `
+        <div class="log-row pending">
+          <div class="log-time">${time}</div>
+          <div class="log-main">
+            <div class="hops">… running</div>
+            <div class="prompt-text">${escape(r.prompt)}</div>
+          </div>
+          <div class="log-lat">—</div>
+        </div>
+      `;
+    }
+    const hopsStr = r.hops.map(h => h.model).join(' → ');
+    const resp = escape(r.response || '');
+    const latClass = r.latencyMs > 3000 ? 'slow' : '';
+    const intentPill = r.intent ? `<span class="intent-pill">intent: ${escape(r.intent)}</span>` : '';
+    return `
+      <div class="log-row">
+        <div class="log-time">${time}</div>
+        <div class="log-main">
+          <div class="hops">${hopsStr} ${intentPill}</div>
+          <div class="prompt-text">${escape(r.prompt)}</div>
+          <div class="resp-text">${resp}</div>
+        </div>
+        <div class="log-lat ${latClass}">${r.latencyMs} ms</div>
+      </div>
+    `;
+  }).join('');
+  container.innerHTML = rows;
+  sub.textContent = `${state.requests.length} request${state.requests.length === 1 ? '' : 's'}`;
+}
+
+function escape(s) {
+  return String(s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]);
+}
+
+async function refresh() {
+  try {
+    const [snap, manifest] = await Promise.all([
+      fetchJSON('/v1/cluster'),
+      fetchJSON('/v1/manifest').catch(() => null),
+    ]);
+    renderModels(snap);
+    renderMetrics(snap);
+    renderHeader(snap, manifest);
+    if (manifest) renderManifest(manifest);
+  } catch (e) {
+    console.error('refresh error', e);
+  }
+}
+
+document.getElementById('prompt-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('prompt-input');
+  const btn = document.getElementById('send-btn');
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+  const id = state.nextId++;
+  const entry = { id, t: new Date(), prompt, pending: true };
+  state.requests.push(entry);
+  renderLog();
+  try {
+    const r = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 64,
+      }),
+    });
+    const j = await r.json();
+    entry.pending = false;
+    entry.response = j.choices?.[0]?.message?.content || '(no response)';
+    entry.hops = j.nrt?.hops?.map(h => ({ model: h.model })) || [];
+    entry.intent = j.nrt?.intent || null;
+    entry.latencyMs = j.nrt?.latency_ms || 0;
+    entry.final = j.nrt?.final_model;
+    renderLog();
+    await refresh();
+  } catch (e) {
+    entry.pending = false;
+    entry.response = 'ERROR: ' + e.message;
+    entry.hops = [];
+    entry.latencyMs = 0;
+    renderLog();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send';
+  }
+});
+
+document.querySelectorAll('.prompt-hint .chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.getElementById('prompt-input').value = chip.getAttribute('data-prompt');
+  });
+});
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+
+</body>
+</html>

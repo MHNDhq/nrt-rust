@@ -1,0 +1,29 @@
+# Warming-heavy scenario. Router + 8 specialists, all Standby on bootstrap,
+# all declaring co_activation: router. Every router hit fires 8 parallel
+# warms, letting the benchmark measure the warming pipeline end-to-end.
+
+cluster: warming-heavy
+
+resources:
+  gpu_budget: 12GB
+  ram_budget: 32GB
+
+models:
+  router:
+    source: stub://router-1b
+    tier: resident
+    priority: critical
+
+  specialists:
+    - { id: w-00, source: stub://phi-3b-00, tier: standby, co_activation: router }
+    - { id: w-01, source: stub://phi-3b-01, tier: standby, co_activation: router }
+    - { id: w-02, source: stub://phi-3b-02, tier: standby, co_activation: router }
+    - { id: w-03, source: stub://phi-3b-03, tier: standby, co_activation: router }
+    - { id: w-04, source: stub://phi-3b-04, tier: standby, co_activation: router }
+    - { id: w-05, source: stub://phi-3b-05, tier: standby, co_activation: router }
+    - { id: w-06, source: stub://phi-3b-06, tier: standby, co_activation: router }
+    - { id: w-07, source: stub://phi-3b-07, tier: standby, co_activation: router }
+
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.{intent}

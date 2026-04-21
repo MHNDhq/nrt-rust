@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nrt-core",
+    "crates/nrt-manifest",
+    "crates/nrt-backend-stub",
+    "crates/nrt-backend-candle",
+    "crates/nrt-cluster",
+    "crates/nrt-server",
+    "crates/nrt-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+authors = ["Muhannad"]
+description = "Neurometric Runtime prototype: Manifest-driven SLM cluster manager in Rust"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "signal"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serde + YAML
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# HTTP
+axum = { version = "0.7", features = ["json", "macros"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+
+# Tracing + metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Concurrency
+dashmap = "6"
+parking_lot = "0.12"
+
+# Errors
+thiserror = "1"
+anyhow = "1"
+
+# Misc
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+
+# Internal crates
+nrt-core = { path = "crates/nrt-core" }
+nrt-manifest = { path = "crates/nrt-manifest" }
+nrt-backend-stub = { path = "crates/nrt-backend-stub" }
+nrt-backend-candle = { path = "crates/nrt-backend-candle" }
+nrt-cluster = { path = "crates/nrt-cluster" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

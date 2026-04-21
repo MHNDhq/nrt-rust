@@ -1,0 +1,23 @@
+[package]
+name = "nrt-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NRT benchmark harness: cluster overhead, co-activation timing, density"
+
+[[bin]]
+name = "nrt-bench"
+path = "src/main.rs"
+
+[dependencies]
+nrt-core.workspace = true
+nrt-manifest.workspace = true
+nrt-cluster.workspace = true
+nrt-backend-stub.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true

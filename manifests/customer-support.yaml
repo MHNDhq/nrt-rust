@@ -1,0 +1,39 @@
+# NRT Manifest for a customer-support agent cluster.
+# Reproduces the example from the NRT product spec v2, verbatim.
+
+cluster: customer-support-agent
+
+resources:
+  gpu_budget: 18GB
+  ram_budget: 32GB
+
+models:
+  router:
+    source: hf://neurometric/router-1b-v2
+    tier: resident
+    priority: critical
+    max_active_sessions: 16
+
+  specialists:
+    - id: billing
+      source: hf://neurometric/billing-phi3
+      tier: resident
+      co_activation: router
+
+    - id: technical
+      source: hf://neurometric/tech-phi3
+      tier: resident
+      co_activation: router
+
+    - id: legal
+      source: hf://neurometric/legal-phi3
+      tier: standby
+      promotion_hint: on_router_classification
+
+fallback:
+  source: hf://anthropic/claude-haiku
+  tier: remote
+
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.{intent}

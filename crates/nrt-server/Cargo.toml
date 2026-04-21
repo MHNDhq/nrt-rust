@@ -1,0 +1,28 @@
+[package]
+name = "nrt-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NRT HTTP server: OpenAI-compatible /v1/chat/completions + Manifest + snapshot"
+
+[[bin]]
+name = "nrt-server"
+path = "src/main.rs"
+
+[dependencies]
+nrt-core.workspace = true
+nrt-manifest.workspace = true
+nrt-cluster.workspace = true
+nrt-backend-stub.workspace = true
+nrt-backend-candle.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true

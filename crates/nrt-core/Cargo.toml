@@ -1,0 +1,17 @@
+[package]
+name = "nrt-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Neurometric Runtime shared types: tiers, sessions, backend trait"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true

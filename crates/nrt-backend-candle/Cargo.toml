@@ -1,0 +1,30 @@
+[package]
+name = "nrt-backend-candle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Real SLM inference for NRT via HuggingFace Candle (pure Rust, Metal on macOS)"
+
+[features]
+default = []
+metal = ["candle-core/metal", "candle-transformers/metal", "candle-nn/metal"]
+
+[dependencies]
+nrt-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+
+candle-core = "0.8"
+candle-nn = "0.8"
+candle-transformers = "0.8"
+hf-hub = { version = "0.3", features = ["tokio"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig", "http"] }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

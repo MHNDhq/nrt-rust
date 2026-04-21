@@ -1,0 +1,72 @@
+# Stress manifest: 1 router + 50 resident specialists, targeting the spec's
+# "50+ Resident model footprints on RTX 4090" density claim. Used by the
+# nrt-bench crate to measure orchestrator overhead and LRU eviction shape.
+
+cluster: density-50-stress
+
+resources:
+  gpu_budget: 24GB
+  ram_budget: 64GB
+
+models:
+  router:
+    source: stub://router-1b
+    tier: resident
+    priority: critical
+    max_active_sessions: 32
+
+  specialists:
+    - { id: intent-00, source: stub://phi-3b-00, tier: resident, co_activation: router }
+    - { id: intent-01, source: stub://phi-3b-01, tier: resident, co_activation: router }
+    - { id: intent-02, source: stub://phi-3b-02, tier: resident, co_activation: router }
+    - { id: intent-03, source: stub://phi-3b-03, tier: resident, co_activation: router }
+    - { id: intent-04, source: stub://phi-3b-04, tier: resident, co_activation: router }
+    - { id: intent-05, source: stub://phi-3b-05, tier: resident, co_activation: router }
+    - { id: intent-06, source: stub://phi-3b-06, tier: resident, co_activation: router }
+    - { id: intent-07, source: stub://phi-3b-07, tier: resident, co_activation: router }
+    - { id: intent-08, source: stub://phi-3b-08, tier: resident, co_activation: router }
+    - { id: intent-09, source: stub://phi-3b-09, tier: resident, co_activation: router }
+    - { id: intent-10, source: stub://phi-3b-10, tier: resident, co_activation: router }
+    - { id: intent-11, source: stub://phi-3b-11, tier: resident, co_activation: router }
+    - { id: intent-12, source: stub://phi-3b-12, tier: resident, co_activation: router }
+    - { id: intent-13, source: stub://phi-3b-13, tier: resident, co_activation: router }
+    - { id: intent-14, source: stub://phi-3b-14, tier: resident, co_activation: router }
+    - { id: intent-15, source: stub://phi-3b-15, tier: resident, co_activation: router }
+    - { id: intent-16, source: stub://phi-3b-16, tier: resident, co_activation: router }
+    - { id: intent-17, source: stub://phi-3b-17, tier: resident, co_activation: router }
+    - { id: intent-18, source: stub://phi-3b-18, tier: resident, co_activation: router }
+    - { id: intent-19, source: stub://phi-3b-19, tier: resident, co_activation: router }
+    - { id: intent-20, source: stub://phi-3b-20, tier: resident, co_activation: router }
+    - { id: intent-21, source: stub://phi-3b-21, tier: resident, co_activation: router }
+    - { id: intent-22, source: stub://phi-3b-22, tier: resident, co_activation: router }
+    - { id: intent-23, source: stub://phi-3b-23, tier: resident, co_activation: router }
+    - { id: intent-24, source: stub://phi-3b-24, tier: resident, co_activation: router }
+    - { id: intent-25, source: stub://phi-3b-25, tier: standby }
+    - { id: intent-26, source: stub://phi-3b-26, tier: standby }
+    - { id: intent-27, source: stub://phi-3b-27, tier: standby }
+    - { id: intent-28, source: stub://phi-3b-28, tier: standby }
+    - { id: intent-29, source: stub://phi-3b-29, tier: standby }
+    - { id: intent-30, source: stub://phi-3b-30, tier: standby }
+    - { id: intent-31, source: stub://phi-3b-31, tier: standby }
+    - { id: intent-32, source: stub://phi-3b-32, tier: standby }
+    - { id: intent-33, source: stub://phi-3b-33, tier: standby }
+    - { id: intent-34, source: stub://phi-3b-34, tier: standby }
+    - { id: intent-35, source: stub://phi-3b-35, tier: standby }
+    - { id: intent-36, source: stub://phi-3b-36, tier: standby }
+    - { id: intent-37, source: stub://phi-3b-37, tier: standby }
+    - { id: intent-38, source: stub://phi-3b-38, tier: standby }
+    - { id: intent-39, source: stub://phi-3b-39, tier: standby }
+    - { id: intent-40, source: stub://phi-3b-40, tier: standby }
+    - { id: intent-41, source: stub://phi-3b-41, tier: standby }
+    - { id: intent-42, source: stub://phi-3b-42, tier: standby }
+    - { id: intent-43, source: stub://phi-3b-43, tier: standby }
+    - { id: intent-44, source: stub://phi-3b-44, tier: standby }
+    - { id: intent-45, source: stub://phi-3b-45, tier: standby }
+    - { id: intent-46, source: stub://phi-3b-46, tier: standby }
+    - { id: intent-47, source: stub://phi-3b-47, tier: standby }
+    - { id: intent-48, source: stub://phi-3b-48, tier: standby }
+    - { id: intent-49, source: stub://phi-3b-49, tier: standby }
+
+routing:
+  entry: router
+  dispatch_rule: router.output.intent -> specialists.{intent}

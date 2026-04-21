@@ -1,0 +1,14 @@
+[package]
+name = "nrt-manifest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "NRT Manifest YAML parser (nrt.yaml spec)"
+
+[dependencies]
+nrt-core.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

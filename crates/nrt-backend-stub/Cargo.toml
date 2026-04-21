@@ -1,0 +1,17 @@
+[package]
+name = "nrt-backend-stub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Deterministic CPU stub backend for NRT — exercises the orchestrator without real model weights"
+
+[dependencies]
+nrt-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
