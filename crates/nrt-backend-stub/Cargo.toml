@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 description = "Deterministic CPU stub backend for NRT — exercises the orchestrator without real model weights"
+publish = false
 
 [dependencies]
 nrt-core.workspace = true

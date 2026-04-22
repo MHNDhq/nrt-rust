@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 description = "Neurometric Runtime shared types: tiers, sessions, backend trait"
+publish = false
 
 [dependencies]
 serde.workspace = true
