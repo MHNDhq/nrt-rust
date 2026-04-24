@@ -1,0 +1,29 @@
+=== NRT vs Ollama runtime-only benchmark ===
+Model:    TinyLlama-1.1B-Chat-v1.0 Q4_K_M (identical GGUF on both runtimes)
+Prompts:  4 × 32 max tokens
+Device:   NRT=Candle CPU, Ollama=Metal (M4)
+
+NRT ready (pid 15608)
+Both runtimes warmed.
+
+--- NRT (Candle CPU, routed through router+specialist Manifest) ---
+  p1 intent=billing     2876 ms  I was charged twice for my subscription last week
+  p2 intent=technical   3030 ms  My login page shows a 502 Bad Gateway error after 
+  p3 intent=legal       2947 ms  Is a binding arbitration clause enforceable under 
+  p4 intent=technical   2014 ms  What is the capital of France
+  avg total: 2716 ms/request (router hop + specialist hop)
+
+--- Ollama (llama.cpp, Metal, single model) ---
+  p1 eval_tokens=32      381 ms  I was charged twice for my subscription last week
+  p2 eval_tokens=32      363 ms  My login page shows a 502 Bad Gateway error after 
+  p3 eval_tokens=32      366 ms  Is a binding arbitration clause enforceable under 
+  p4 eval_tokens=19      256 ms  What is the capital of France
+  avg total: 341 ms/request (single model, no dispatch)
+
+=== Summary ===
+NRT    average latency (router + specialist, 2 forward passes): 2716 ms
+Ollama average latency (1 forward pass on Metal):               341 ms
+
+Honest read: NRT does TWO forward passes per request (router classifies
+intent, then the specialist generates). Ollama does ONE. The per-hop NRT
+number is what compares directly to Ollama's number.

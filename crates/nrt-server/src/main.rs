@@ -13,17 +13,23 @@ use anyhow::Context;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json,
+    },
     routing::{get, post},
     Router,
 };
+use futures::stream::{self, Stream};
 use nrt_backend_candle::{router_profile, specialist_profile, CandleBackend, ModelMap};
 use nrt_backend_stub::StubBackend;
-use nrt_cluster::{ClusterHandle, ClusterManager, ClusterSnapshot, CompletionResult};
+use nrt_cluster::{
+    ClusterHandle, ClusterManager, ClusterSnapshot, CompletionHop, CompletionResult,
+};
 use nrt_core::{Backend, ModelId, SessionId};
 use nrt_manifest::Manifest;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -47,8 +53,11 @@ async fn main() -> anyhow::Result<()> {
 
     let backend: Arc<dyn Backend> = match args.backend.as_str() {
         "stub" => build_stub_backend(&manifest),
-        "candle" => build_candle_backend(&manifest).await?,
-        other => anyhow::bail!("unknown --backend {other:?}; expected one of: stub, candle"),
+        "candle" => build_candle_backend(&manifest, CandleDevicePolicy::Auto).await?,
+        "candle-metal" => build_candle_backend(&manifest, CandleDevicePolicy::ForceMetal).await?,
+        other => anyhow::bail!(
+            "unknown --backend {other:?}; expected one of: stub, candle, candle-metal"
+        ),
     };
     let cluster = ClusterManager::bootstrap(manifest, backend).await?;
 
@@ -77,6 +86,16 @@ fn init_tracing() {
         .init();
 }
 
+/// Picked via `--backend candle` (Auto) vs `--backend candle-metal` (forced).
+/// ForceMetal fails loudly if the binary wasn't compiled with the `metal`
+/// feature or if Metal device 0 is unavailable, rather than silently
+/// falling back to CPU.
+#[derive(Debug, Clone, Copy)]
+enum CandleDevicePolicy {
+    Auto,
+    ForceMetal,
+}
+
 /// Pre-populate the stub backend with intent sets inferred from the manifest:
 /// the entry model is declared as a router, and the set of legal intents is the
 /// list of specialist ids.
@@ -98,7 +117,10 @@ fn build_stub_backend(manifest: &Manifest) -> Arc<dyn Backend> {
 /// pattern the NRT spec's "LoRA stacking for fine-tunes of a shared base"
 /// approximates with real finetunes — here we approximate it with system prompts
 /// so the prototype runs without training anything.
-async fn build_candle_backend(manifest: &Manifest) -> anyhow::Result<Arc<dyn Backend>> {
+async fn build_candle_backend(
+    manifest: &Manifest,
+    policy: CandleDevicePolicy,
+) -> anyhow::Result<Arc<dyn Backend>> {
     let intents: Vec<String> = manifest
         .models
         .specialists
@@ -115,7 +137,16 @@ async fn build_candle_backend(manifest: &Manifest) -> anyhow::Result<Arc<dyn Bac
         profiles.insert(s.id.clone(), specialist_profile(s.id.as_str()));
     }
 
-    let backend = CandleBackend::new(profiles)?;
+    let backend = match policy {
+        CandleDevicePolicy::Auto => CandleBackend::new(profiles)?,
+        CandleDevicePolicy::ForceMetal => CandleBackend::new_metal(profiles)?,
+    };
+    tracing::info!(
+        target: "nrt_server",
+        device = %backend.device_kind(),
+        policy = ?policy,
+        "candle backend device"
+    );
     // Remote-tier fallback (if declared): register a placeholder so the cluster
     // can load() it without fetching weights.
     if let Some(fb) = manifest.fallback.as_ref() {
@@ -165,7 +196,8 @@ impl Args {
                 }
                 "--help" | "-h" => {
                     println!(
-                        "nrt-server [--manifest PATH] [--addr HOST:PORT] [--backend stub|candle]"
+                        "nrt-server [--manifest PATH] [--addr HOST:PORT] \
+                         [--backend stub|candle|candle-metal]"
                     );
                     std::process::exit(0);
                 }
@@ -229,13 +261,55 @@ struct ChatChoice {
 struct ChatResponseMessage {
     role: &'static str,
     content: String,
+    /// Populated for the router hop: the cluster emits a synthetic tool call
+    /// of the form `dispatch_to_specialist(intent=...)` so the client sees the
+    /// Manifest's dispatch rule as a function-call shape. Kept as an option so
+    /// the final assistant message in non-router responses stays clean.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<ToolCall>,
+}
+
+/// OpenAI-compatible tool-call shape. NRT synthesizes these from the
+/// Manifest's `dispatch_rule` rather than asking the model to emit them —
+/// the spec's "router -> specialists.{intent}" rule is already a declarative
+/// function call, so surfacing it here closes the OpenAI-API floor without
+/// making the router do two jobs.
+#[derive(Debug, Serialize, Clone)]
+struct ToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: ToolFunction,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ToolFunction {
+    name: &'static str,
+    arguments: String,
+}
+
+fn dispatch_tool_call(session_id: &SessionId, hop: &CompletionHop) -> Option<ToolCall> {
+    let intent = hop.intent.as_ref()?;
+    let args = serde_json::json!({
+        "intent": intent,
+        "target": format!("specialists.{}", intent),
+    });
+    Some(ToolCall {
+        id: format!("call_{}_{}", session_id, hop.model.as_str()),
+        kind: "function",
+        function: ToolFunction {
+            name: "dispatch_to_specialist",
+            arguments: args.to_string(),
+        },
+    })
 }
 
 async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>, AppError> {
+) -> Result<axum::response::Response, AppError> {
     validate_chat_request(&state.cluster, &req)?;
+    let streaming = req.stream;
     let prompt = format_chat_prompt(&req.messages);
 
     let result = state
@@ -243,6 +317,20 @@ async fn chat_completions(
         .chat_completion(req.session_id, prompt, req.max_tokens)
         .await
         .map_err(AppError::from)?;
+
+    if streaming {
+        Ok(chat_completions_sse(result).into_response())
+    } else {
+        Ok(chat_completions_json(result).into_response())
+    }
+}
+
+fn chat_completions_json(result: CompletionResult) -> Json<ChatCompletionResponse> {
+    let router_hop = result.hops.first();
+    let tool_calls = router_hop
+        .and_then(|hop| dispatch_tool_call(&result.session_id, hop))
+        .into_iter()
+        .collect::<Vec<_>>();
 
     let resp = ChatCompletionResponse {
         id: format!("nrt-{}", result.session_id),
@@ -252,12 +340,90 @@ async fn chat_completions(
             message: ChatResponseMessage {
                 role: "assistant",
                 content: result.completion.clone(),
+                tool_calls,
             },
             finish_reason: "stop",
         }],
         nrt: result,
     };
-    Ok(Json(resp))
+    Json(resp)
+}
+
+/// OpenAI-shaped Server-Sent Events. We don't yet have token-level streaming
+/// out of the Candle backend (that's an M2 item — per-token yield through the
+/// Cluster Manager's hop boundary), so the current implementation streams at
+/// *hop granularity*: one SSE frame per completed hop (router, then
+/// specialist), plus a terminating `[DONE]` sentinel. Hop-level streaming
+/// already buys the client a progressive UX — a user sees the router's
+/// classification decision before the specialist finishes composing.
+/// Token-level streaming swaps the inner generator for a `mpsc::Receiver<Token>`
+/// without changing this wire format.
+fn chat_completions_sse(
+    result: CompletionResult,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let session = result.session_id;
+    let id = format!("nrt-{session}");
+    let final_model = result.final_model.clone();
+
+    let mut frames: Vec<Result<Event, Infallible>> = Vec::new();
+
+    for (idx, hop) in result.hops.iter().enumerate() {
+        let tool_calls = dispatch_tool_call(&session, hop)
+            .into_iter()
+            .collect::<Vec<_>>();
+        // OpenAI shape: when tool_calls are present, content is empty on that
+        // delta. The raw per-hop completion still reaches clients through the
+        // non-standard `nrt.hop_completion` field so demos and dashboards can
+        // render both the tool call and the router's raw output.
+        let delta = if tool_calls.is_empty() {
+            serde_json::json!({
+                "role": "assistant",
+                "content": hop.completion,
+            })
+        } else {
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": tool_calls,
+            })
+        };
+        let chunk = serde_json::json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": serde_json::Value::Null,
+            }],
+            "nrt": {
+                "hop_index": idx,
+                "model": hop.model,
+                "intent": hop.intent,
+                "latency_ms": hop.latency_ms,
+                "hop_completion": hop.completion,
+            },
+        });
+        frames.push(Ok(Event::default().data(chunk.to_string())));
+    }
+
+    let closing = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop",
+        }],
+        "nrt": {
+            "final_model": final_model,
+            "latency_ms": result.latency_ms,
+            "hops_total": result.hops.len(),
+        },
+    });
+    frames.push(Ok(Event::default().data(closing.to_string())));
+    frames.push(Ok(Event::default().data("[DONE]")));
+
+    Sse::new(stream::iter(frames)).keep_alive(KeepAlive::default())
 }
 
 async fn cluster_snapshot(State(state): State<AppState>) -> Json<ClusterSnapshot> {
@@ -289,11 +455,6 @@ fn validate_chat_request(
     if req.messages.is_empty() {
         return Err(AppError::bad_request(
             "messages must contain at least one chat message",
-        ));
-    }
-    if req.stream {
-        return Err(AppError::bad_request(
-            "stream=true is not supported by this prototype",
         ));
     }
     validate_requested_model(req.model.as_deref(), &cluster.manifest().routing.entry)
@@ -402,5 +563,73 @@ mod tests {
         assert!(prompt.contains("<|system|>\nbe concise"));
         assert!(prompt.contains("<|user|>\nrefund please"));
         assert!(prompt.contains("<|assistant|>\nWhat order number?"));
+    }
+
+    #[test]
+    fn dispatch_tool_call_uses_manifest_rule_shape() {
+        let session = SessionId::new();
+        let router_hop = CompletionHop {
+            model: ModelId::new("router"),
+            completion: "intent=billing".into(),
+            intent: Some("billing".into()),
+            latency_ms: 47,
+        };
+        let tc = dispatch_tool_call(&session, &router_hop).expect("intent present -> tool call");
+        assert_eq!(tc.kind, "function");
+        assert_eq!(tc.function.name, "dispatch_to_specialist");
+        // The args are a JSON object; parse them back to assert shape.
+        let parsed: serde_json::Value = serde_json::from_str(&tc.function.arguments).unwrap();
+        assert_eq!(parsed["intent"], "billing");
+        assert_eq!(parsed["target"], "specialists.billing");
+    }
+
+    #[test]
+    fn dispatch_tool_call_skipped_when_intent_absent() {
+        let session = SessionId::new();
+        let specialist_hop = CompletionHop {
+            model: ModelId::new("billing"),
+            completion: "we will refund you".into(),
+            intent: None,
+            latency_ms: 320,
+        };
+        assert!(dispatch_tool_call(&session, &specialist_hop).is_none());
+    }
+
+    #[test]
+    fn non_streaming_response_surfaces_tool_call_on_router_hop() {
+        let session = SessionId::new();
+        let result = CompletionResult {
+            session_id: session,
+            entry_model: ModelId::new("router"),
+            final_model: ModelId::new("billing"),
+            intent: Some("billing".into()),
+            completion: "we will refund you".into(),
+            latency_ms: 367,
+            hops: vec![
+                CompletionHop {
+                    model: ModelId::new("router"),
+                    completion: "intent=billing".into(),
+                    intent: Some("billing".into()),
+                    latency_ms: 47,
+                },
+                CompletionHop {
+                    model: ModelId::new("billing"),
+                    completion: "we will refund you".into(),
+                    intent: None,
+                    latency_ms: 320,
+                },
+            ],
+        };
+        let Json(resp) = chat_completions_json(result);
+        assert_eq!(resp.choices.len(), 1);
+        let choice = &resp.choices[0];
+        assert_eq!(choice.message.tool_calls.len(), 1);
+        assert_eq!(
+            choice.message.tool_calls[0].function.name,
+            "dispatch_to_specialist"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&choice.message.tool_calls[0].function.arguments).unwrap();
+        assert_eq!(parsed["intent"], "billing");
     }
 }

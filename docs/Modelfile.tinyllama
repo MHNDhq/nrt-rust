@@ -1,0 +1,24 @@
+# Ollama Modelfile: register the same TinyLlama 1.1B Chat v1.0 Q4_K_M GGUF
+# that NRT's Candle backend loads from HuggingFace, so the two runtimes
+# serve IDENTICAL weights during the head-to-head benchmark.
+#
+# The FROM path below assumes you already ran `cargo run -p nrt-backend-candle
+# --example hello_candle` once (which downloads the GGUF into the HF cache).
+# If your HF cache is elsewhere, edit the absolute path before running
+# `ollama create nrt-tinyllama-q4km -f docs/Modelfile.tinyllama`.
+
+FROM /Users/mhnd/.cache/huggingface/hub/models--TheBloke--TinyLlama-1.1B-Chat-v1.0-GGUF/snapshots/52e7645ba7c309695bec7ac98f4f005b139cf465/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+
+TEMPLATE """<|system|>
+{{ .System }}</s>
+<|user|>
+{{ .Prompt }}</s>
+<|assistant|>
+"""
+
+SYSTEM """You are a concise assistant."""
+
+PARAMETER stop "</s>"
+PARAMETER stop "<|user|>"
+PARAMETER stop "<|system|>"
+PARAMETER temperature 0

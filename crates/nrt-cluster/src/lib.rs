@@ -21,5 +21,7 @@ pub mod manager;
 pub mod metrics;
 pub mod scheduler;
 
-pub use manager::{settle, ClusterHandle, ClusterManager, ClusterSnapshot, CompletionResult};
+pub use manager::{
+    settle, ClusterHandle, ClusterManager, ClusterSnapshot, CompletionHop, CompletionResult,
+};
 pub use scheduler::{LruPolicy, SchedulerEvent};

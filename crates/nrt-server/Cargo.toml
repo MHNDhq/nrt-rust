@@ -9,6 +9,10 @@ repository.workspace = true
 description = "NRT HTTP server: OpenAI-shaped /v1/chat/completions subset + Manifest + snapshot"
 publish = false
 
+[features]
+default = []
+metal = ["nrt-backend-candle/metal"]
+
 [[bin]]
 name = "nrt-server"
 path = "src/main.rs"
@@ -29,3 +33,4 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+futures.workspace = true

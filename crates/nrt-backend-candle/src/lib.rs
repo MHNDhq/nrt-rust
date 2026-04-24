@@ -115,22 +115,74 @@ pub struct CandleBackend {
 }
 
 impl CandleBackend {
-    /// Build a backend using Metal on macOS if available, CPU otherwise.
-    /// Callers pass a `ModelMap` describing the registered profiles.
+    /// Build a backend using Metal on macOS if the `metal` feature is on and
+    /// a Metal device is present, CPU otherwise. Callers pass a `ModelMap`
+    /// describing the registered profiles.
     pub fn new(profiles: ModelMap) -> Result<Self, CandleError> {
         let device = pick_device();
-        info!(target: "candle", device = ?device, "CandleBackend starting");
-        Ok(Self {
+        info!(target: "candle", device = ?device, "CandleBackend starting (auto)");
+        Ok(Self::with_device(device, profiles))
+    }
+
+    /// Force a Metal device. Fails loudly if the `metal` feature is not
+    /// compiled in, if the host is not macOS, or if Metal device 0 cannot
+    /// be opened. Intended for callers that want to prove Metal is live,
+    /// not silently fall back to CPU.
+    pub fn new_metal(profiles: ModelMap) -> Result<Self, CandleError> {
+        #[cfg(feature = "metal")]
+        {
+            let device = Device::new_metal(0).map_err(|e| {
+                CandleError::Tokenizer(format!(
+                    "Device::new_metal(0) failed: {e}. macOS 13+ required; \
+                     ensure this binary was built with --features metal."
+                ))
+            })?;
+            info!(target: "candle", "CandleBackend starting (Metal device 0)");
+            return Ok(Self::with_device(device, profiles));
+        }
+        #[cfg(not(feature = "metal"))]
+        {
+            let _ = profiles;
+            Err(CandleError::Tokenizer(
+                "metal feature not compiled in; rebuild with \
+                 `cargo build -p nrt-backend-candle --features metal` or \
+                 `cargo run -p nrt-server --features metal -- --backend candle-metal`"
+                    .into(),
+            ))
+        }
+    }
+
+    fn with_device(device: Device, profiles: ModelMap) -> Self {
+        Self {
             device,
             profiles: RwLock::new(profiles),
             shared: RwLock::new(Default::default()),
             loaded: RwLock::new(Default::default()),
             load_counter: AtomicU64::new(0),
-        })
+        }
     }
 
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    /// One-word device tag used by /v1/cluster and bench output.
+    /// Distinguishes "candle backend on Metal" from "candle backend on CPU"
+    /// when a reviewer looks at the live snapshot. We match Candle's enum by
+    /// the lossy-diagnostic path (debug-format the device) because the
+    /// feature-gated variants are not always in scope for us.
+    pub fn device_kind(&self) -> &'static str {
+        if matches!(self.device, Device::Cpu) {
+            return "cpu";
+        }
+        let dbg = format!("{:?}", self.device);
+        if dbg.starts_with("Metal") {
+            "metal"
+        } else if dbg.starts_with("Cuda") {
+            "cuda"
+        } else {
+            "other"
+        }
     }
 
     pub fn register(&self, id: ModelId, profile: ModelProfile) {
